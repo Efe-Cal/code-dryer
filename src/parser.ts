@@ -1,0 +1,213 @@
+import * as vscode from 'vscode';
+import Parser = require('tree-sitter');
+import JavaScript = require('tree-sitter-javascript');
+import Python = require('tree-sitter-python');
+import TypeScript = require('tree-sitter-typescript');
+const crypto = require('crypto');
+
+type TreeSitterLanguage = {
+	name: string;
+	language: unknown;
+};
+
+const parserByLanguage = new Map<string, Parser>();
+export const grammarByLanguageId = new Map<string, TreeSitterLanguage>([
+	['javascript', JavaScript],
+	['javascriptreact', JavaScript],
+	['python', Python],
+	['typescript', TypeScript.typescript],
+	['typescriptreact', TypeScript.tsx],
+]);
+
+const supportedNodeTypes = new Set([
+	'class_declaration',
+	'class_definition',
+	'function_declaration',
+	'function_definition',
+	'generator_function_declaration',
+	'method_definition',
+]);
+
+const parameterNodeTypes = new Set([
+	'default_parameter',
+	'formal_parameters',
+	'keyword_argument',
+	'keyword_separator',
+	'list_pattern',
+	'list_splat_pattern',
+	'parameters',
+	'pattern_list',
+	'positional_separator',
+	'required_parameter',
+	'optional_parameter',
+	'rest_pattern',
+	'assignment_pattern',
+	'object_pattern',
+	'array_pattern',
+	'tuple_pattern',
+	'typed_default_parameter',
+	'typed_parameter',
+]);
+
+const toRange = (node: Parser.SyntaxNode) => {
+	return new vscode.Range(
+		new vscode.Position(node.startPosition.row, node.startPosition.column),
+		new vscode.Position(node.endPosition.row, node.endPosition.column)
+	);
+};
+
+type SymbolWithSource = {
+	id: string;
+	name: string;
+	kind: vscode.SymbolKind;
+	range: vscode.Range;
+	selectionRange: vscode.Range;
+	source: string;
+};
+
+const getParserForDocument = (document: vscode.TextDocument) => {
+	const grammar = grammarByLanguageId.get(document.languageId);
+	if (!grammar) {
+		return null;
+	}
+
+	let parser = parserByLanguage.get(document.languageId);
+	if (!parser) {
+		parser = new Parser();
+		parser.setLanguage(grammar);
+		parserByLanguage.set(document.languageId, parser);
+	}
+
+	return parser;
+};
+
+const getDeclarationName = (node: Parser.SyntaxNode) => {
+	const nameNode = node.childForFieldName('name');
+	return nameNode?.text ?? '[anonymous]';
+};
+
+const getSymbolKind = (node: Parser.SyntaxNode) => {
+	if (node.type === 'class_declaration' || node.type === 'class_definition') {
+		return vscode.SymbolKind.Class;
+	}
+
+	if (node.type === 'method_definition') {
+		return vscode.SymbolKind.Method;
+	}
+
+	return vscode.SymbolKind.Function;
+};
+
+const collectIdentifierNodes = (node: Parser.SyntaxNode, collected: Parser.SyntaxNode[]) => {
+	if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
+		collected.push(node);
+	}
+
+	for (const child of node.namedChildren) {
+		collectIdentifierNodes(child, collected);
+	}
+};
+
+const abstractifyVariableNames = (node: Parser.SyntaxNode, source: string) => {
+	const replacements = new Map<string, string>();
+	let counter = 1;
+
+	const registerNode = (identifierNode: Parser.SyntaxNode) => {
+		const identifier = identifierNode.text;
+		if (!replacements.has(identifier)) {
+			replacements.set(identifier, `var${counter}`);
+			counter += 1;
+		}
+	};
+
+	for (const descendant of node.descendantsOfType([
+		'assignment',
+		'variable_declarator',
+		'catch_clause',
+		...parameterNodeTypes,
+	])) {
+		if (descendant.type === 'variable_declarator') {
+			const nameNode = descendant.childForFieldName('name');
+			if (!nameNode) {
+				continue;
+			}
+
+			const identifiers: Parser.SyntaxNode[] = [];
+			collectIdentifierNodes(nameNode, identifiers);
+			for (const identifierNode of identifiers) {
+				registerNode(identifierNode);
+			}
+			continue;
+		}
+
+		if (descendant.type === 'assignment') {
+			const leftNode = descendant.childForFieldName('left');
+			if (!leftNode) {
+				continue;
+			}
+
+			const identifiers: Parser.SyntaxNode[] = [];
+			collectIdentifierNodes(leftNode, identifiers);
+			for (const identifierNode of identifiers) {
+				registerNode(identifierNode);
+			}
+			continue;
+		}
+
+		const identifiers: Parser.SyntaxNode[] = [];
+		collectIdentifierNodes(descendant, identifiers);
+		for (const identifierNode of identifiers) {
+			registerNode(identifierNode);
+		}
+	}
+
+	const identifierNodes = node.descendantsOfType([
+		'identifier',
+		'shorthand_property_identifier',
+		'shorthand_property_identifier_pattern',
+	]);
+	const edits = identifierNodes
+		.filter((identifierNode) => replacements.has(identifierNode.text))
+		.map((identifierNode) => ({
+			start: identifierNode.startIndex - node.startIndex,
+			end: identifierNode.endIndex - node.startIndex,
+			text: replacements.get(identifierNode.text)!,
+		}))
+		.sort((left, right) => right.start - left.start);
+
+	let nextSource = source;
+	for (const edit of edits) {
+		nextSource = `${nextSource.slice(0, edit.start)}${edit.text}${nextSource.slice(edit.end)}`;
+	}
+
+	return nextSource;
+};
+
+export async function getFunctionsAndClasses(document: vscode.TextDocument): Promise<SymbolWithSource[]> {
+	const parser = getParserForDocument(document);
+	if (!parser) {
+		return [];
+	}
+
+	const source = document.getText();
+	const tree = parser.parse(source);
+	const declarationNodes = tree.rootNode
+		.descendantsOfType(Array.from(supportedNodeTypes))
+		.sort((left, right) => left.startIndex - right.startIndex);
+
+	return declarationNodes.map((node) => {
+		const selectionNode = node.childForFieldName('name') ?? node;
+		const nodeSource = source.slice(node.startIndex, node.endIndex);
+		const range = toRange(node);
+		const sourceHash = crypto.createHash('sha256').update(nodeSource).digest('hex'); 
+		const id = `${document.uri.fsPath}:${sourceHash}`;
+		return {
+			id,
+			name: getDeclarationName(node),
+			kind: getSymbolKind(node),
+			range,
+			selectionRange: toRange(selectionNode),
+			source: abstractifyVariableNames(node, nodeSource),
+		};
+	});
+}
