@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { showSimilaritiesView } from './similaritiesView';
 
-const API_KEY=process.env.API_KEY;
+const EMBEDDINGS_API_URL = process.env.EMBEDDINGS_API_URL ?? 'http://localhost:3000/embeddings';
 
 const EMBEDDING_DIM = 1536;
 type StoredEmbedding = {
@@ -28,17 +28,21 @@ type SimilarityMatch = {
 
 
 async function getEmbeddings(text: string): Promise<number[]> {
-	const response = await fetch("https://ai.hackclub.com/proxy/v1/embeddings", {
+	const response = await fetch(EMBEDDINGS_API_URL, {
 		method: "POST",
 		headers: {
-			"Content-Type": "application/json",
-			"Authorization": `Bearer ${API_KEY}`
+			"Content-Type": "application/json"
 		},
 		body: JSON.stringify({
 			input: text,
 			model: "openai/text-embedding-3-small"
 		})
-	})
+	});
+
+	if (!response.ok) {
+		throw new Error(`Embeddings request failed with status ${response.status}`);
+	}
+
 	const data = await response.json() as EmbeddingResponse;
 	return data.data[0].embedding;
 }
