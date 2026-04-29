@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { showSimilaritiesView } from './similaritiesView';
 
-const EMBEDDINGS_API_URL = process.env.EMBEDDINGS_API_URL ?? 'http://localhost:3000/embeddings';
+const EMBEDDINGS_API_URL = "https://code-dryer-production-1fmg2m6a.up.railway.app/embeddings";
 
 const EMBEDDING_DIM = 1536;
 type StoredEmbedding = {
