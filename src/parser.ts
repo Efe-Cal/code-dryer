@@ -62,6 +62,7 @@ export type SymbolWithSource = {
 	kind: vscode.SymbolKind;
 	range: vscode.Range;
 	selectionRange: vscode.Range;
+	rawSource: string;
 	source: string;
 };
 
@@ -106,6 +107,26 @@ const collectIdentifierNodes = (node: Parser.SyntaxNode, collected: Parser.Synta
 	for (const child of node.namedChildren) {
 		collectIdentifierNodes(child, collected);
 	}
+};
+
+const stripComments = (node: Parser.SyntaxNode, source: string) => {
+	const commentEdits = node
+		.descendantsOfType('comment')
+		.map((commentNode) => ({
+			start: commentNode.startIndex - node.startIndex,
+			end: commentNode.endIndex - node.startIndex,
+			text: source
+				.slice(commentNode.startIndex - node.startIndex, commentNode.endIndex - node.startIndex)
+				.replace(/[^\r\n]/g, ' '),
+		}))
+		.sort((left, right) => right.start - left.start);
+
+	let nextSource = source;
+	for (const edit of commentEdits) {
+		nextSource = `${nextSource.slice(0, edit.start)}${edit.text}${nextSource.slice(edit.end)}`;
+	}
+
+	return nextSource;
 };
 
 const abstractifyVariableNames = (node: Parser.SyntaxNode, source: string) => {
@@ -207,7 +228,8 @@ export async function getFunctionsAndClasses(document: vscode.TextDocument): Pro
 			kind: getSymbolKind(node),
 			range,
 			selectionRange: toRange(selectionNode),
-			source: abstractifyVariableNames(node, nodeSource),
+			source: abstractifyVariableNames(node, stripComments(node, nodeSource)),
+			rawSource: nodeSource,
 		};
 	});
 }

@@ -5,7 +5,7 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import { showSimilaritiesView } from './similaritiesView';
 
-const API_KEY="sk-hc-v1-341f2d23e92447f0b20a9fb1cf05773af4a837cc35b144e3b604bd502f141072";
+const API_KEY=process.env.API_KEY;
 
 const EMBEDDING_DIM = 1536;
 type StoredEmbedding = {
@@ -101,7 +101,7 @@ export function activate(context: vscode.ExtensionContext) {
 			outputChannel.appendLine(`Name: ${item.name}`);
 			outputChannel.appendLine(`Kind: ${vscode.SymbolKind[item.kind]}`);
 			outputChannel.appendLine('Source:');
-			outputChannel.appendLine(item.source.length > 0 ? item.source: '[No source code available]');
+			outputChannel.appendLine(item.rawSource.length > 0 ? item.rawSource : '[No source code available]');
 			outputChannel.appendLine('');
 		}
 

@@ -33,7 +33,7 @@ const createSymbolButton = (symbol: SymbolWithSource, role: string) => {
 		>
 			<span class="symbol-name">${escapeHtml(symbol.name)}</span>
 			<span class="symbol-range">Lines ${startLine}-${endLine}</span>
-			<span class="symbol-snippet"><code>${escapeHtml(symbol.source.length > 0 ? symbol.source : '[No source code available]')}</code></span>
+			<span class="symbol-snippet"><code>${escapeHtml(symbol.rawSource.length > 0 ? symbol.rawSource : '[No source code available]')}</code></span>
 		</button>
 	`;
 };
