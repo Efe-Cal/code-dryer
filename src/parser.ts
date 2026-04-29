@@ -56,7 +56,7 @@ const toRange = (node: Parser.SyntaxNode) => {
 	);
 };
 
-type SymbolWithSource = {
+export type SymbolWithSource = {
 	id: string;
 	name: string;
 	kind: vscode.SymbolKind;

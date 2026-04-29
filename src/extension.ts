@@ -1,8 +1,9 @@
 import * as vscode from 'vscode';
-import { getFunctionsAndClasses, grammarByLanguageId } from './parser';
+import { getFunctionsAndClasses, grammarByLanguageId, type SymbolWithSource } from './parser';
 import { HierarchicalNSW } from 'hnswlib-node';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { showSimilaritiesView } from './similaritiesView';
 
 const API_KEY="sk-hc-v1-341f2d23e92447f0b20a9fb1cf05773af4a837cc35b144e3b604bd502f141072";
 
@@ -17,6 +18,12 @@ type EmbeddingResponse = {
 	data: Array<{
 		embedding: number[];
 	}>;
+};
+
+type SimilarityMatch = {
+	item: SymbolWithSource;
+	similarItem: SymbolWithSource;
+	similarity: number;
 };
 
 
@@ -123,20 +130,30 @@ export function activate(context: vscode.ExtensionContext) {
 			index.addPoint(embedding, label);
 		}
 		
+		const similarities: SimilarityMatch[] = [];
+
 		for(const item of items) {
 			const embedding = embeddings.find((entry) => entry.itemId === item.id)?.embedding;
 			if (!embedding) continue;
 			const searchResult = index.searchKnn(embedding, 2);
-			outputChannel.appendLine(`Top similar symbol to ${item.name} (other than itself):`);
 			if (searchResult.neighbors.length > 1) {
-				const similarItem = items[searchResult.neighbors[1]];
-				outputChannel.appendLine(`- ${similarItem.name} (Similarity: ${(1 - searchResult.distances[1]).toFixed(4)})`);
+				if(!similarities.find((entry) => entry.similarItem.id === item.id)){
+					outputChannel.appendLine(`Top similar symbol to ${item.name} (other than itself):`);
+					similarities.push({
+					item,
+					similarItem: items[searchResult.neighbors[1]],
+					similarity: 1 - searchResult.distances[1]
+				});
+					const similarItem = items[searchResult.neighbors[1]];
+					outputChannel.appendLine(`- ${similarItem.name} (Similarity: ${(1 - searchResult.distances[1]).toFixed(4)})`);
+				}	
 			}
 			outputChannel.appendLine('');
 		}
 		
-
-		vscode.window.showInformationMessage(`Found ${items.length} class/function symbol(s).`);
+		vscode.window.showInformationMessage(`Found ${similarities.length} class/function symbol(s) that are similar to others.`);
+		showSimilaritiesView(context, editor.document, similarities);
+	
 	});
 
 	context.subscriptions.push(disposable, outputChannel);
