@@ -214,13 +214,8 @@ export function activate(context: vscode.ExtensionContext) {
 			outputChannel.appendLine('');
 		}
 
-		// Filter out pairs with very low similarity
-		const similarityThreshold = 0.75;
-		const filteredSimilarities = similarities.filter((entry) => entry.similarity >= similarityThreshold);
-		
-		vscode.window.showInformationMessage(`Found ${filteredSimilarities.length} code section(s) that are similar to others.`);
-		showSimilaritiesView(context, documents[0], filteredSimilarities);
-	
+		vscode.window.showInformationMessage(`Found ${similarities.length} code section(s) with similarity matches.`);
+		showSimilaritiesView(context, documents[0], similarities);
 	});
 
 	context.subscriptions.push(disposable, outputChannel);

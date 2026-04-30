@@ -42,10 +42,10 @@ const createSymbolButton = (symbol: SymbolWithSource, role: string) => {
 
 const getWebviewHtml = (webview: vscode.Webview, document: vscode.TextDocument, similarities: SimilarityMatch[]) => {
 	const nonce = `${Date.now()}${Math.random().toString(16).slice(2)}`;
-	const content = similarities.length === 0
-		? `<div class="empty-state">No similar symbols were found in ${escapeHtml(document.fileName)}.</div>`
+	const cardsHtml = similarities.length === 0
+		? `<div class="empty-state" data-empty-all>No similar symbols were found in ${escapeHtml(document.fileName)}.</div>`
 		: similarities.map((entry) => `
-			<section class="card">
+			<section class="card" data-similarity-percent="${(entry.similarity * 100).toFixed(1)}">
 				<div class="score">${(entry.similarity * 100).toFixed(1)}%</div>
 				<div class="pairing">
 					<div>
@@ -97,6 +97,37 @@ const getWebviewHtml = (webview: vscode.Webview, document: vscode.TextDocument, 
 		.subtitle {
 			color: var(--vscode-descriptionForeground);
 			margin: 0 0 18px;
+		}
+
+		.toolbar {
+			display: grid;
+			gap: 8px;
+			margin: 0 0 18px;
+			padding: 14px;
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 8px;
+			background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-editor-selectionBackground));
+		}
+
+		.toolbar-header {
+			display: flex;
+			align-items: center;
+			justify-content: space-between;
+			gap: 12px;
+		}
+
+		.toolbar-title {
+			font-weight: 600;
+		}
+
+		.threshold-value,
+		.results-count {
+			color: var(--vscode-descriptionForeground);
+			font-size: 0.9rem;
+		}
+
+		.threshold-slider {
+			width: 100%;
 		}
 
 		.results {
@@ -191,22 +222,76 @@ const getWebviewHtml = (webview: vscode.Webview, document: vscode.TextDocument, 
 	<main>
 		<h1>Similarity Results</h1>
 		<p class="subtitle">${escapeHtml(document.fileName)}</p>
-		<div class="results">${content}</div>
+		<section class="toolbar">
+			<div class="toolbar-header">
+				<div class="toolbar-title">Minimum similarity</div>
+				<div id="threshold-value" class="threshold-value">75%</div>
+			</div>
+			<input id="threshold-slider" class="threshold-slider" type="range" min="0" max="100" step="5" value="75" />
+			<div id="results-count" class="results-count"></div>
+		</section>
+		<div id="results" class="results"></div>
 	</main>
 	<script nonce="${nonce}">
 		const vscode = acquireVsCodeApi();
-		for (const button of document.querySelectorAll('.symbol-button')) {
-			button.addEventListener('click', () => {
-				vscode.postMessage({
-					type: 'revealRange',
-					uri: button.dataset.uri,
-					startLine: Number(button.dataset.startLine),
-					startCharacter: Number(button.dataset.startCharacter),
-					endLine: Number(button.dataset.endLine),
-					endCharacter: Number(button.dataset.endCharacter)
+		const thresholdSlider = document.getElementById('threshold-slider');
+		const thresholdValue = document.getElementById('threshold-value');
+		const resultsCount = document.getElementById('results-count');
+		const results = document.getElementById('results');
+		results.innerHTML = ${JSON.stringify(cardsHtml)};
+
+		const bindRevealHandlers = () => {
+			for (const button of document.querySelectorAll('.symbol-button')) {
+				button.addEventListener('click', () => {
+					vscode.postMessage({
+						type: 'revealRange',
+						uri: button.dataset.uri,
+						startLine: Number(button.dataset.startLine),
+						startCharacter: Number(button.dataset.startCharacter),
+						endLine: Number(button.dataset.endLine),
+						endCharacter: Number(button.dataset.endCharacter)
+					});
 				});
-			});
-		}
+			}
+		};
+
+		const render = () => {
+			const threshold = Number(thresholdSlider.value);
+			thresholdValue.textContent = \`\${threshold}%\`;
+			const cards = Array.from(results.querySelectorAll('[data-similarity-percent]'));
+			let visibleCount = 0;
+
+			for (const card of cards) {
+				const similarityPercent = Number(card.getAttribute('data-similarity-percent'));
+				const isVisible = similarityPercent >= threshold;
+				card.hidden = !isVisible;
+				if (isVisible) {
+					visibleCount += 1;
+				}
+			}
+
+			const emptyAll = results.querySelector('[data-empty-all]');
+			if (emptyAll) {
+				resultsCount.textContent = '0 match(es) available';
+				return;
+			}
+
+			let thresholdEmpty = results.querySelector('[data-empty-threshold]');
+			if (!thresholdEmpty) {
+				thresholdEmpty = document.createElement('div');
+				thresholdEmpty.className = 'empty-state';
+				thresholdEmpty.setAttribute('data-empty-threshold', 'true');
+				thresholdEmpty.textContent = 'No similarity matches meet the current threshold.';
+				results.appendChild(thresholdEmpty);
+			}
+
+			thresholdEmpty.hidden = visibleCount > 0;
+			resultsCount.textContent = \`\${visibleCount} of \${cards.length} match(es) shown\`;
+		};
+
+		bindRevealHandlers();
+		thresholdSlider.addEventListener('input', render);
+		render();
 	</script>
 </body>
 </html>`;
