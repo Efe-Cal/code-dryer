@@ -29,6 +29,9 @@ npm install
 
 2. Press `F5` to open the Extension Development Host, then run the `Code Dryer: Dry` command and select files.
 
-## Notes
+## How it is helpful
+In a large codebase, it isn't always easy to find similar code sections that could be refactored. With Code Dryer, you can quickly identify these sections and DRY up your code.
 
+
+## Notes
 - Embeddings are stored in the extension global storage (per workspace).

@@ -3,6 +3,12 @@
   "displayName": "code-dryer",
   "description": "",
   "version": "0.0.1",
+  "icon": "images/code-dryer-icon.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Efe-Cal/code-dryer"
+  },
+  "publisher": "Efe-Cal",
   "engines": {
     "vscode": "^1.116.0"
   },
