@@ -15,7 +15,7 @@
     "commands": [
       {
         "command": "code-dryer.dry",
-        "title": "DRY Code"
+        "title": "Code Dryer: Dry"
       }
     ]
   },
