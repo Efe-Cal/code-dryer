@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { getFunctionsAndClasses, grammarByLanguageId, type SymbolWithSource } from './parser';
+import { getFunctionsAndClasses, getTopLevelCodeChunks, grammarByLanguageId, type SymbolWithSource } from './parser';
 import { HierarchicalNSW } from 'hnswlib-node';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -87,28 +87,32 @@ export function activate(context: vscode.ExtensionContext) {
 			return;
 		}
 
-		const items = await getFunctionsAndClasses(editor.document);
+		const symbols = getFunctionsAndClasses(editor.document);
+		const topLevelChunks = getTopLevelCodeChunks(editor.document);
+		const allItems: SymbolWithSource[] = [...symbols, ...topLevelChunks];
 		outputChannel.clear();
 		outputChannel.show(true);
 
-		if (items.length === 0) {
+		outputChannel.appendLine(`Identified ${symbols.length} class/function symbol(s) and ${topLevelChunks.length} top-level code chunk(s) in the active file.`);
+		outputChannel.appendLine(''); 
+
+		if (allItems.length === 0) {
 			const unsupportedLanguage = !grammarByLanguageId.has(editor.document.languageId);
 			const message = unsupportedLanguage
 				? `Tree-sitter is not configured for "${editor.document.languageId}" yet.`
-				: 'No classes or functions were found in the active file.';
+				: 'No classes, functions, or top-level code chunks were found in the active file.';
 			vscode.window.showInformationMessage(message);
 			outputChannel.appendLine(message);
 			return;
 		}
 
-		for (const item of items) {
+		for (const item of allItems) {
 			outputChannel.appendLine(`Name: ${item.name}`);
 			outputChannel.appendLine(`Kind: ${vscode.SymbolKind[item.kind]}`);
 			outputChannel.appendLine('Source:');
 			outputChannel.appendLine(item.rawSource.length > 0 ? item.rawSource : '[No source code available]');
 			outputChannel.appendLine('');
 		}
-
 
 		const index = new HierarchicalNSW('cosine', EMBEDDING_DIM);
 		index.initIndex(10000);
@@ -120,7 +124,7 @@ export function activate(context: vscode.ExtensionContext) {
 		);
 		const embeddings: StoredEmbedding[] = [];
 
-		for (const [idx, item] of items.entries()) {
+		for (const [idx, item] of allItems.entries()) {
 			let embedding = storedEmbeddingsByItemId.get(item.id);
 			if (!embedding) {
 				embedding = await getEmbeddings(item.source);
@@ -136,27 +140,34 @@ export function activate(context: vscode.ExtensionContext) {
 		
 		const similarities: SimilarityMatch[] = [];
 
-		for(const item of items) {
+		for(const item of allItems) {
 			const embedding = embeddings.find((entry) => entry.itemId === item.id)?.embedding;
 			if (!embedding) continue;
 			const searchResult = index.searchKnn(embedding, 2);
 			if (searchResult.neighbors.length > 1) {
 				if(!similarities.find((entry) => entry.similarItem.id === item.id)){
 					outputChannel.appendLine(`Top similar symbol to ${item.name} (other than itself):`);
+					const similarItem = allItems[searchResult.neighbors[1]];
+					if (!similarItem) {
+						continue;
+					}
 					similarities.push({
-					item,
-					similarItem: items[searchResult.neighbors[1]],
-					similarity: 1 - searchResult.distances[1]
-				});
-					const similarItem = items[searchResult.neighbors[1]];
+						item,
+						similarItem,
+						similarity: 1 - searchResult.distances[1]
+					});
 					outputChannel.appendLine(`- ${similarItem.name} (Similarity: ${(1 - searchResult.distances[1]).toFixed(4)})`);
 				}	
 			}
 			outputChannel.appendLine('');
 		}
+
+		// Filter out pairs with very low similarity
+		const similarityThreshold = 0.75;
+		const filteredSimilarities = similarities.filter((entry) => entry.similarity >= similarityThreshold);
 		
-		vscode.window.showInformationMessage(`Found ${similarities.length} class/function symbol(s) that are similar to others.`);
-		showSimilaritiesView(context, editor.document, similarities);
+		vscode.window.showInformationMessage(`Found ${filteredSimilarities.length} code section(s) that are similar to others.`);
+		showSimilaritiesView(context, editor.document, filteredSimilarities);
 	
 	});
 

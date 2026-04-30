@@ -204,7 +204,7 @@ const abstractifyVariableNames = (node: Parser.SyntaxNode, source: string) => {
 	return nextSource;
 };
 
-export async function getFunctionsAndClasses(document: vscode.TextDocument): Promise<SymbolWithSource[]> {
+export function getFunctionsAndClasses(document: vscode.TextDocument): SymbolWithSource[] {
 	const parser = getParserForDocument(document);
 	if (!parser) {
 		return [];
@@ -230,6 +230,79 @@ export async function getFunctionsAndClasses(document: vscode.TextDocument): Pro
 			selectionRange: toRange(selectionNode),
 			source: abstractifyVariableNames(node, stripComments(node, nodeSource)),
 			rawSource: nodeSource,
+		};
+	});
+}
+
+export type TopLevelCodeChunk = SymbolWithSource & {
+	nodes: Parser.SyntaxNode[];
+};
+
+const hasLargeBlankGap = (
+	source: string,
+	prev: Parser.SyntaxNode,
+	next: Parser.SyntaxNode
+) => {
+	const between = source.slice(prev.endIndex, next.startIndex);
+	return /\r?\n(\r?\n)+/.test(between);
+};
+
+
+export function getTopLevelCodeChunks(document: vscode.TextDocument): TopLevelCodeChunk[] {
+	const parser = getParserForDocument(document);
+	if (!parser) {
+		return [];
+	}
+
+	const source = document.getText();
+	const tree = parser.parse(source);
+	const topLevelNodes = tree.rootNode.namedChildren;
+
+	const chunks: Parser.SyntaxNode[][] = [];
+	let currentChunk: Parser.SyntaxNode[] = [];
+
+	const flush = () => {
+		if (currentChunk.length > 0) {
+			chunks.push(currentChunk);
+			currentChunk = [];
+		}
+	};
+
+	for (const node of topLevelNodes) {
+		if (supportedNodeTypes.has(node.type)) {
+			flush();
+			continue;
+		}
+
+		const prevNode = currentChunk[currentChunk.length - 1];
+		if (prevNode && hasLargeBlankGap(source, prevNode, node)) {
+			flush();
+		}
+
+		currentChunk.push(node);
+	}
+
+	flush();
+
+	return chunks.map((nodes) => {
+		const first = nodes[0];
+		const last = nodes[nodes.length - 1];
+		const chunkNodeText = source.slice(first.startIndex, last.endIndex);
+		const range = new vscode.Range(
+			new vscode.Position(first.startPosition.row, first.startPosition.column),
+			new vscode.Position(last.endPosition.row, last.endPosition.column)
+		);
+		const sourceHash = crypto.createHash('sha256').update(chunkNodeText).digest('hex');
+		const id = `${document.uri.fsPath}:${sourceHash}`;
+		return {
+			id,
+			name: `[top-level ${first.startPosition.row + 1}-${last.endPosition.row + 1}]`,
+			kind: vscode.SymbolKind.Namespace,
+			range,
+			selectionRange: range,
+			source: chunkNodeText,
+			rawSource: chunkNodeText,
+			nodes,
 		};
 	});
 }
