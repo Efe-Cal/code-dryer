@@ -77,30 +77,82 @@ async function getEmbeddingsFromFile(filePath: string): Promise<StoredEmbedding[
 	}
 }
 
+async function pickWorkspaceFiles(): Promise<vscode.Uri[] | undefined> {
+	const workspaceFolders = vscode.workspace.workspaceFolders;
+	if (!workspaceFolders || workspaceFolders.length === 0) {
+		vscode.window.showErrorMessage('Open a workspace first.');
+		return;
+	}
+
+	const fileUris = await vscode.workspace.findFiles(
+		'**/*',
+		'**/{.git,node_modules,out,dist,coverage}/**'
+	);
+
+	if (fileUris.length === 0) {
+		vscode.window.showInformationMessage('No workspace files were found to analyze.');
+		return;
+	}
+
+	const selectedItems = await vscode.window.showQuickPick(
+		fileUris.map((uri) => ({
+			label: vscode.workspace.asRelativePath(uri),
+			description: workspaceFolders.find((folder) => folder.uri.toString() === vscode.workspace.getWorkspaceFolder(uri)?.uri.toString())?.name,
+			uri,
+		})),
+		{
+			canPickMany: true,
+			ignoreFocusOut: true,
+			matchOnDescription: true,
+			matchOnDetail: true,
+			placeHolder: 'Select workspace files to analyze',
+			title: 'Code Dryer',
+		}
+	);
+
+	return selectedItems?.map((item) => item.uri);
+}
+
 export function activate(context: vscode.ExtensionContext) {
 	const outputChannel = vscode.window.createOutputChannel('Code Dryer');
 
 	const disposable = vscode.commands.registerCommand('code-dryer.dry', async () => {
-		const editor = vscode.window.activeTextEditor;
-		if (!editor) {
-			vscode.window.showErrorMessage('Open a file first.');
+		const selectedUris = await pickWorkspaceFiles();
+		if (!selectedUris || selectedUris.length === 0) {
 			return;
 		}
 
-		const symbols = getFunctionsAndClasses(editor.document);
-		const topLevelChunks = getTopLevelCodeChunks(editor.document);
-		const allItems: SymbolWithSource[] = [...symbols, ...topLevelChunks];
+		const documents = await Promise.all(
+			selectedUris.map((uri) => vscode.workspace.openTextDocument(uri))
+		);
+		const allItems: SymbolWithSource[] = [];
+		let totalSymbols = 0;
+		let totalTopLevelChunks = 0;
+
+		for (const document of documents) {
+			const symbols = getFunctionsAndClasses(document);
+			const topLevelChunks = getTopLevelCodeChunks(document);
+			totalSymbols += symbols.length;
+			totalTopLevelChunks += topLevelChunks.length;
+			allItems.push(...symbols, ...topLevelChunks);
+		}
+
 		outputChannel.clear();
 		outputChannel.show(true);
 
-		outputChannel.appendLine(`Identified ${symbols.length} class/function symbol(s) and ${topLevelChunks.length} top-level code chunk(s) in the active file.`);
+		outputChannel.appendLine(`Selected ${documents.length} file(s).`);
+		outputChannel.appendLine(`Identified ${totalSymbols} class/function symbol(s) and ${totalTopLevelChunks} top-level code chunk(s) across the selected files.`);
 		outputChannel.appendLine(''); 
 
 		if (allItems.length === 0) {
-			const unsupportedLanguage = !grammarByLanguageId.has(editor.document.languageId);
-			const message = unsupportedLanguage
-				? `Tree-sitter is not configured for "${editor.document.languageId}" yet.`
-				: 'No classes, functions, or top-level code chunks were found in the active file.';
+			const unsupportedLanguages = [...new Set(
+				documents
+					.map((document) => document.languageId)
+					.filter((languageId) => !grammarByLanguageId.has(languageId))
+			)];
+			const message = unsupportedLanguages.length > 0
+				? `Tree-sitter is not configured for: ${unsupportedLanguages.join(', ')}.`
+				: 'No classes, functions, or top-level code chunks were found in the selected files.';
 			vscode.window.showInformationMessage(message);
 			outputChannel.appendLine(message);
 			return;
@@ -110,7 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
 			outputChannel.appendLine(`Name: ${item.name}`);
 			outputChannel.appendLine(`Kind: ${vscode.SymbolKind[item.kind]}`);
 			outputChannel.appendLine('Source:');
-			outputChannel.appendLine(item.rawSource.length > 0 ? item.rawSource : '[No source code available]');
+			outputChannel.appendLine(item.source.length > 0 ? item.source : '[No source code available]');
 			outputChannel.appendLine('');
 		}
 
@@ -167,7 +219,7 @@ export function activate(context: vscode.ExtensionContext) {
 		const filteredSimilarities = similarities.filter((entry) => entry.similarity >= similarityThreshold);
 		
 		vscode.window.showInformationMessage(`Found ${filteredSimilarities.length} code section(s) that are similar to others.`);
-		showSimilaritiesView(context, editor.document, filteredSimilarities);
+		showSimilaritiesView(context, documents[0], filteredSimilarities);
 	
 	});
 

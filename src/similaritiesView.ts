@@ -26,12 +26,14 @@ const createSymbolButton = (symbol: SymbolWithSource, role: string) => {
 		<button
 			class="symbol-button"
 			data-role="${escapeHtml(role)}"
+			data-uri="${escapeHtml(symbol.uri.toString())}"
 			data-start-line="${symbol.range.start.line}"
 			data-start-character="${symbol.range.start.character}"
 			data-end-line="${symbol.range.end.line}"
 			data-end-character="${symbol.range.end.character}"
 		>
 			<span class="symbol-name">${escapeHtml(symbol.name)}</span>
+			<span class="symbol-range">${escapeHtml(vscode.workspace.asRelativePath(symbol.uri))}</span>
 			<span class="symbol-range">Lines ${startLine}-${endLine}</span>
 			<span class="symbol-snippet"><code>${escapeHtml(symbol.rawSource.length > 0 ? symbol.rawSource : '[No source code available]')}</code></span>
 		</button>
@@ -197,6 +199,7 @@ const getWebviewHtml = (webview: vscode.Webview, document: vscode.TextDocument, 
 			button.addEventListener('click', () => {
 				vscode.postMessage({
 					type: 'revealRange',
+					uri: button.dataset.uri,
 					startLine: Number(button.dataset.startLine),
 					startCharacter: Number(button.dataset.startCharacter),
 					endLine: Number(button.dataset.endLine),
@@ -234,11 +237,13 @@ export function showSimilaritiesView(
 				return;
 			}
 
+			const documentUri = vscode.Uri.parse(message.uri);
 			const range = new vscode.Range(
 				new vscode.Position(message.startLine, message.startCharacter),
 				new vscode.Position(message.endLine, message.endCharacter)
 			);
-			const editor = await vscode.window.showTextDocument(document, {
+			const targetDocument = await vscode.workspace.openTextDocument(documentUri);
+			const editor = await vscode.window.showTextDocument(targetDocument, {
 				viewColumn: vscode.ViewColumn.One,
 				preserveFocus: true,
 			});

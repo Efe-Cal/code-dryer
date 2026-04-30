@@ -31,8 +31,6 @@ const supportedNodeTypes = new Set([
 const parameterNodeTypes = new Set([
 	'default_parameter',
 	'formal_parameters',
-	'keyword_argument',
-	'keyword_separator',
 	'list_pattern',
 	'list_splat_pattern',
 	'parameters',
@@ -58,6 +56,7 @@ const toRange = (node: Parser.SyntaxNode) => {
 
 export type SymbolWithSource = {
 	id: string;
+	uri: vscode.Uri;
 	name: string;
 	kind: vscode.SymbolKind;
 	range: vscode.Range;
@@ -99,13 +98,25 @@ const getSymbolKind = (node: Parser.SyntaxNode) => {
 	return vscode.SymbolKind.Function;
 };
 
-const collectIdentifierNodes = (node: Parser.SyntaxNode, collected: Parser.SyntaxNode[]) => {
+const collectIdentifierNodes = (
+	node: Parser.SyntaxNode,
+	collected: Parser.SyntaxNode[],
+	excludedNodes: Set<Parser.SyntaxNode> = new Set()
+) => {
+	if (
+		excludedNodes.has(node) ||
+		node.type === 'type' ||
+		node.type === 'type_annotation'
+	) {
+		return;
+	}
+
 	if (node.type === 'identifier' || node.type === 'shorthand_property_identifier_pattern') {
 		collected.push(node);
 	}
 
 	for (const child of node.namedChildren) {
-		collectIdentifierNodes(child, collected);
+		collectIdentifierNodes(child, collected, excludedNodes);
 	}
 };
 
@@ -130,7 +141,12 @@ const stripComments = (node: Parser.SyntaxNode, source: string) => {
 };
 
 const normalizeCode = (node: Parser.SyntaxNode, source: string) => {
-	
+	type SourceEdit = {
+		start: number;
+		end: number;
+		text: string;
+	};
+
 	const abstractifyVariableNames = (node: Parser.SyntaxNode) => {
 		const replacements = new Map<string, string>();
 		let counter = 1;
@@ -176,8 +192,30 @@ const normalizeCode = (node: Parser.SyntaxNode, source: string) => {
 				continue;
 			}
 
+			if (descendant.type === 'catch_clause') {
+				const parameterNode = descendant.childForFieldName('parameter');
+				if (!parameterNode) {
+					continue;
+				}
+
+				const identifiers: Parser.SyntaxNode[] = [];
+				collectIdentifierNodes(parameterNode, identifiers);
+				for (const identifierNode of identifiers) {
+					registerNode(identifierNode);
+				}
+				continue;
+			}
+
 			const identifiers: Parser.SyntaxNode[] = [];
-			collectIdentifierNodes(descendant, identifiers);
+			const excludedNodes = new Set<Parser.SyntaxNode>();
+			for (const fieldName of ['type', 'value', 'right']) {
+				const excludedNode = descendant.childForFieldName(fieldName);
+				if (excludedNode) {
+					excludedNodes.add(excludedNode);
+				}
+			}
+
+			collectIdentifierNodes(descendant, identifiers, excludedNodes);
 			for (const identifierNode of identifiers) {
 				registerNode(identifierNode);
 			}
@@ -191,12 +229,12 @@ const normalizeCode = (node: Parser.SyntaxNode, source: string) => {
 
 		return identifierNodes
 			.filter((identifierNode) => replacements.has(identifierNode.text))
-			.map((identifierNode) => ({
+			.map((identifierNode): SourceEdit => ({
 				start: identifierNode.startIndex - node.startIndex,
 				end: identifierNode.endIndex - node.startIndex,
 				text: replacements.get(identifierNode.text)!,
 			}));
-	}
+	};
 
 	const collectLiteralNormalizationEdits = (node: Parser.SyntaxNode) => {
 		const replacementsByType = new Map<string, string>([
@@ -235,17 +273,25 @@ const normalizeCode = (node: Parser.SyntaxNode, source: string) => {
 		return node
 			.descendantsOfType(replaceableTypes)
 			.filter((literalNode) => !hasReplaceableAncestor(literalNode))
-			.map((literalNode) => ({
+			.map((literalNode): SourceEdit => ({
 				start: literalNode.startIndex - node.startIndex,
 				end: literalNode.endIndex - node.startIndex,
 				text: replacementsByType.get(literalNode.type)!,
 			}));
 	};
 
+	const editsOverlap = (left: SourceEdit, right: SourceEdit) => {
+		return left.start < right.end && right.start < left.end;
+	};
+
+	const literalEdits = collectLiteralNormalizationEdits(node);
+	const variableEdits = abstractifyVariableNames(node).filter((variableEdit) => {
+		return !literalEdits.some((literalEdit) => editsOverlap(variableEdit, literalEdit));
+	});
 
 	const edits = [
-		...abstractifyVariableNames(node),
-		...collectLiteralNormalizationEdits(node),
+		...variableEdits,
+		...literalEdits,
 	].sort((left, right) => right.start - left.start);
 
 
@@ -277,6 +323,7 @@ export function getFunctionsAndClasses(document: vscode.TextDocument): SymbolWit
 		const id = `${document.uri.fsPath}:${sourceHash}`;
 		return {
 			id,
+			uri: document.uri,
 			name: getDeclarationName(node),
 			kind: getSymbolKind(node),
 			range,
@@ -349,6 +396,7 @@ export function getTopLevelCodeChunks(document: vscode.TextDocument): TopLevelCo
 		const id = `${document.uri.fsPath}:${sourceHash}`;
 		return {
 			id,
+			uri: document.uri,
 			name: `[top-level ${first.startPosition.row + 1}-${last.endPosition.row + 1}]`,
 			kind: vscode.SymbolKind.Namespace,
 			range,
