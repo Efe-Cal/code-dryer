@@ -129,72 +129,125 @@ const stripComments = (node: Parser.SyntaxNode, source: string) => {
 	return nextSource;
 };
 
-const abstractifyVariableNames = (node: Parser.SyntaxNode, source: string) => {
-	const replacements = new Map<string, string>();
-	let counter = 1;
+const normalizeCode = (node: Parser.SyntaxNode, source: string) => {
+	
+	const abstractifyVariableNames = (node: Parser.SyntaxNode) => {
+		const replacements = new Map<string, string>();
+		let counter = 1;
+	
+		const registerNode = (identifierNode: Parser.SyntaxNode) => {
+			const identifier = identifierNode.text;
+			if (!replacements.has(identifier)) {
+				replacements.set(identifier, `var${counter}`);
+				counter += 1;
+			}
+		};
+		for (const descendant of node.descendantsOfType([
+			'assignment',
+			'variable_declarator',
+			'catch_clause',
+			...parameterNodeTypes,
+		])) {
+			if (descendant.type === 'variable_declarator') {
+				const nameNode = descendant.childForFieldName('name');
+				if (!nameNode) {
+					continue;
+				}
 
-	const registerNode = (identifierNode: Parser.SyntaxNode) => {
-		const identifier = identifierNode.text;
-		if (!replacements.has(identifier)) {
-			replacements.set(identifier, `var${counter}`);
-			counter += 1;
-		}
-	};
+				const identifiers: Parser.SyntaxNode[] = [];
+				collectIdentifierNodes(nameNode, identifiers);
+				for (const identifierNode of identifiers) {
+					registerNode(identifierNode);
+				}
+				continue;
+			}
 
-	for (const descendant of node.descendantsOfType([
-		'assignment',
-		'variable_declarator',
-		'catch_clause',
-		...parameterNodeTypes,
-	])) {
-		if (descendant.type === 'variable_declarator') {
-			const nameNode = descendant.childForFieldName('name');
-			if (!nameNode) {
+			if (descendant.type === 'assignment') {
+				const leftNode = descendant.childForFieldName('left');
+				if (!leftNode) {
+					continue;
+				}
+
+				const identifiers: Parser.SyntaxNode[] = [];
+				collectIdentifierNodes(leftNode, identifiers);
+				for (const identifierNode of identifiers) {
+					registerNode(identifierNode);
+				}
 				continue;
 			}
 
 			const identifiers: Parser.SyntaxNode[] = [];
-			collectIdentifierNodes(nameNode, identifiers);
+			collectIdentifierNodes(descendant, identifiers);
 			for (const identifierNode of identifiers) {
 				registerNode(identifierNode);
 			}
-			continue;
 		}
 
-		if (descendant.type === 'assignment') {
-			const leftNode = descendant.childForFieldName('left');
-			if (!leftNode) {
-				continue;
-			}
+		const identifierNodes = node.descendantsOfType([
+			'identifier',
+			'shorthand_property_identifier',
+			'shorthand_property_identifier_pattern',
+		]);
 
-			const identifiers: Parser.SyntaxNode[] = [];
-			collectIdentifierNodes(leftNode, identifiers);
-			for (const identifierNode of identifiers) {
-				registerNode(identifierNode);
-			}
-			continue;
-		}
-
-		const identifiers: Parser.SyntaxNode[] = [];
-		collectIdentifierNodes(descendant, identifiers);
-		for (const identifierNode of identifiers) {
-			registerNode(identifierNode);
-		}
+		return identifierNodes
+			.filter((identifierNode) => replacements.has(identifierNode.text))
+			.map((identifierNode) => ({
+				start: identifierNode.startIndex - node.startIndex,
+				end: identifierNode.endIndex - node.startIndex,
+				text: replacements.get(identifierNode.text)!,
+			}));
 	}
 
-	const identifierNodes = node.descendantsOfType([
-		'identifier',
-		'shorthand_property_identifier',
-		'shorthand_property_identifier_pattern',
-	]);
-	const edits = identifierNodes
-		.filter((identifierNode) => replacements.has(identifierNode.text))
-		.map((identifierNode) => ({
-			start: identifierNode.startIndex - node.startIndex,
-			end: identifierNode.endIndex - node.startIndex,
-			text: replacements.get(identifierNode.text)!,
-		}))
-		.sort((left, right) => right.start - left.start);
+	const collectLiteralNormalizationEdits = (node: Parser.SyntaxNode) => {
+		const replacementsByType = new Map<string, string>([
+			// JS / TS
+			['string', '"STR"'],
+			['template_string', '"STR"'],
+			['number', '0'],
+			['array', '[]'],
+			['object', '{}'],
+
+			// Python
+			['concatenated_string', '"STR"'],
+			['integer', '0'],
+			['float', '0'],
+			['none', 'None'],
+			['list', '[]'],
+			['tuple', '()'],
+			['dictionary', '{}'],
+			['set', 'set()'],
+		]);
+
+		const replaceableTypes = Array.from(replacementsByType.keys());
+		const replaceableTypeSet = new Set(replaceableTypes);
+
+		const hasReplaceableAncestor = (literalNode: Parser.SyntaxNode) => {
+			let current = literalNode.parent;
+			while (current && current !== node) {
+				if (replaceableTypeSet.has(current.type)) {
+					return true;
+				}
+				current = current.parent;
+			}
+			return false;
+		};
+
+		return node
+			.descendantsOfType(replaceableTypes)
+			.filter((literalNode) => !hasReplaceableAncestor(literalNode))
+			.map((literalNode) => ({
+				start: literalNode.startIndex - node.startIndex,
+				end: literalNode.endIndex - node.startIndex,
+				text: replacementsByType.get(literalNode.type)!,
+			}));
+	};
+
+
+	const edits = [
+		...abstractifyVariableNames(node),
+		...collectLiteralNormalizationEdits(node),
+	].sort((left, right) => right.start - left.start);
+
 
 	let nextSource = source;
 	for (const edit of edits) {
@@ -228,7 +281,7 @@ export function getFunctionsAndClasses(document: vscode.TextDocument): SymbolWit
 			kind: getSymbolKind(node),
 			range,
 			selectionRange: toRange(selectionNode),
-			source: abstractifyVariableNames(node, stripComments(node, nodeSource)),
+			source: normalizeCode(node, stripComments(node, nodeSource)),
 			rawSource: nodeSource,
 		};
 	});
