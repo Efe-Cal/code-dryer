@@ -4,9 +4,10 @@ Finds similar code in selected files with semantic embeddings, so you can refact
 
 ## Use
 
-1. Run `Code Dryer: Dry`
-2. Select files
-3. See similarity results
+1. Open the Command Palette (`Ctrl+Shift+P` or `Cmd+Shift+P`)
+2. Run `Code Dryer: Dry`
+3. Select files
+4. See similarity results
  
 ## About
 
