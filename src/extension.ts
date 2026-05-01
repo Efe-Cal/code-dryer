@@ -1,6 +1,5 @@
 import * as vscode from 'vscode';
 import { getFunctionsAndClasses, getTopLevelCodeChunks, grammarByLanguageId, type SymbolWithSource } from './parser';
-import { HierarchicalNSW } from 'hnswlib-node';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { showSimilaritiesView } from './similaritiesView';
@@ -25,6 +24,26 @@ type SimilarityMatch = {
 	similarItem: SymbolWithSource;
 	similarity: number;
 };
+
+function cosineSimilarity(left: number[], right: number[]): number {
+	let dotProduct = 0;
+	let leftMagnitude = 0;
+	let rightMagnitude = 0;
+
+	for (let idx = 0; idx < left.length; idx += 1) {
+		const leftValue = left[idx];
+		const rightValue = right[idx];
+		dotProduct += leftValue * rightValue;
+		leftMagnitude += leftValue * leftValue;
+		rightMagnitude += rightValue * rightValue;
+	}
+
+	if (leftMagnitude === 0 || rightMagnitude === 0) {
+		return 0;
+	}
+
+	return dotProduct / (Math.sqrt(leftMagnitude) * Math.sqrt(rightMagnitude));
+}
 
 
 async function getEmbeddings(text: string): Promise<number[]> {
@@ -166,15 +185,13 @@ export function activate(context: vscode.ExtensionContext) {
 			outputChannel.appendLine('');
 		}
 
-		const index = new HierarchicalNSW('cosine', EMBEDDING_DIM);
-		index.initIndex(10000);
-
 		const embeddingsFilePath = getEmbeddingsFilePath(context);
 		const storedEmbeddings = await getEmbeddingsFromFile(embeddingsFilePath);
 		const storedEmbeddingsByItemId = new Map(
 			(storedEmbeddings ?? []).map((entry) => [entry.itemId, entry.embedding])
 		);
 		const embeddings: StoredEmbedding[] = [];
+		const embeddingsByIndex: number[][] = [];
 
 		for (const [idx, item] of allItems.entries()) {
 			let embedding = storedEmbeddingsByItemId.get(item.id);
@@ -183,34 +200,48 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			embeddings.push({ embedding, label: idx, itemId: item.id });
+			embeddingsByIndex[idx] = embedding;
 		}
 		await storeEmbeddings(embeddings, embeddingsFilePath);
-
-		for (const { embedding, label } of embeddings) {
-			index.addPoint(embedding, label);
-		}
 		
 		const similarities: SimilarityMatch[] = [];
 
-		for(const item of allItems) {
-			const embedding = embeddings.find((entry) => entry.itemId === item.id)?.embedding;
-			if (!embedding) continue;
-			const searchResult = index.searchKnn(embedding, 2);
-			if (searchResult.neighbors.length > 1) {
-				if(!similarities.find((entry) => entry.similarItem.id === item.id)){
-					outputChannel.appendLine(`Top similar symbol to ${item.name} (other than itself):`);
-					const similarItem = allItems[searchResult.neighbors[1]];
-					if (!similarItem) {
-						continue;
-					}
-					similarities.push({
-						item,
-						similarItem,
-						similarity: 1 - searchResult.distances[1]
-					});
-					outputChannel.appendLine(`- ${similarItem.name} (Similarity: ${(1 - searchResult.distances[1]).toFixed(4)})`);
-				}	
+		for (const [itemIndex, item] of allItems.entries()) {
+			const embedding = embeddingsByIndex[itemIndex];
+			if (!embedding) {
+				continue;
 			}
+
+			let bestMatchIndex = -1;
+			let bestSimilarity = Number.NEGATIVE_INFINITY;
+
+			for (const [candidateIndex, candidateEmbedding] of embeddingsByIndex.entries()) {
+				if (candidateIndex === itemIndex || !candidateEmbedding) {
+					continue;
+				}
+
+				const similarity = cosineSimilarity(embedding, candidateEmbedding);
+				if (similarity > bestSimilarity) {
+					bestSimilarity = similarity;
+					bestMatchIndex = candidateIndex;
+				}
+			}
+
+			if (bestMatchIndex !== -1 && !similarities.find((entry) => entry.similarItem.id === item.id)) {
+				outputChannel.appendLine(`Top similar symbol to ${item.name} (other than itself):`);
+				const similarItem = allItems[bestMatchIndex];
+				if (!similarItem) {
+					continue;
+				}
+
+				similarities.push({
+					item,
+					similarItem,
+					similarity: bestSimilarity
+				});
+				outputChannel.appendLine(`- ${similarItem.name} (Similarity: ${bestSimilarity.toFixed(4)})`);
+			}
+
 			outputChannel.appendLine('');
 		}
 
